@@ -4,7 +4,7 @@
 {-# Language JavaScriptFFI #-}
 #endif
 
-module EVM.Keccak (word256Bytes, keccak, abiKeccak, newContractAddress, newContractAddressCREATE2) where
+module EVM.Keccak (word256Bytes, keccak, abiKeccak, newContractAddress, newContractAddressCREATE2, rlpWord160, rlpWord256, rlpBytes, rlpList) where
 
 import EVM.Types
 
@@ -79,6 +79,9 @@ abiKeccak =
     >>> BS.take 4
     >>> BS.unpack
     >>> word32
+
+rlpBytes :: ByteString -> ByteString
+rlpBytes x = _
 
 rlpWord256 :: W256 -> ByteString
 rlpWord256 0 = BS.pack [0x80]
