@@ -52,6 +52,7 @@ data Block = Block
   , blockGasLimit   :: W256
   , blockNumber     :: W256
   , blockTimestamp  :: W256
+  , blockTxs        :: [Transaction]
   } deriving Show
 
 data Case = Case
@@ -62,7 +63,6 @@ data Case = Case
 
 data BlockchainCase = BlockchainCase
   { blockchainBlocks  :: [Block]
-  , blockchainTxs     :: [Transaction]
   , blockchainPre     :: Map Addr Contract
   , blockchainPost    :: Map Addr Contract
   , blockchainNetwork :: String
@@ -109,7 +109,6 @@ checkExpectedOut output ex = case ex of
   Nothing       -> True
   Just expected -> output == expected
 
-
 checkExpectedContracts :: EVM.VM -> Map Addr Contract -> Bool
 checkExpectedContracts vm expected =
   realizeContracts expected == vm ^. EVM.env . EVM.contracts . to (fmap clearZeroStorage)
@@ -147,7 +146,6 @@ instance FromJSON Case where
 instance FromJSON BlockchainCase where
   parseJSON (JSON.Object v) = BlockchainCase
     <$> v .: "blocks"
-    <*> v .: "transactions"
     <*> parseContracts Pre v
     <*> parseContracts Post v
     <*> v .: "network"
@@ -156,12 +154,14 @@ instance FromJSON BlockchainCase where
 
 instance FromJSON Block where
   parseJSON (JSON.Object v) = do
-    coinbase   <- addrField v "coinbase"
-    difficulty <- wordField v "difficulty"
-    gasLimit   <- wordField v "gasLimit"
-    number     <- wordField v "number"
-    timestamp  <- wordField v "timestamp"
-    return $ Block coinbase difficulty gasLimit number timestamp
+    v'         <- v .: "blockHeader"
+    txs        <- v .: "transactions"
+    coinbase   <- addrField v' "coinbase"
+    difficulty <- wordField v' "difficulty"
+    gasLimit   <- wordField v' "gasLimit"
+    number     <- wordField v' "number"
+    timestamp  <- wordField v' "timestamp"
+    return $ Block coinbase difficulty gasLimit number timestamp txs
   parseJSON invalid =
     JSON.typeMismatch "Block" invalid
 
@@ -247,12 +247,13 @@ realizeContract x =
 data BlockchainError = TooManyBlocks | TooManyTxs | CreationUnsupported | TargetMissing | SignatureUnverified | OldNetwork deriving Show
 
 fromBlockchainCase :: BlockchainCase -> Either BlockchainError Case
-fromBlockchainCase (BlockchainCase blocks txs pre post network) =
-  case (blocks, txs, network) of
-    ((block : []), (tx : []), "ConstantinopleFix") -> fromGoodBlockchainCase block tx pre post
-    ((_ : []), (_ : []), _) -> Left OldNetwork
-    (_, (_ : []), _)        -> Left TooManyBlocks
-    (_, _, _)               -> Left TooManyTxs
+fromBlockchainCase (BlockchainCase blocks pre post network) =
+  case (blocks, network) of
+    ((block : []), "ConstantinopleFix") -> case blockTxs block of
+      (tx : []) -> fromGoodBlockchainCase block tx pre post
+      _         -> Left TooManyTxs
+    ((_ : []), _) -> Left OldNetwork
+    (_, _)        -> Left TooManyBlocks
 
 fromGoodBlockchainCase :: Block -> Transaction
                        -> Map Addr Contract -> Map Addr Contract
