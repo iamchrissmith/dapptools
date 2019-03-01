@@ -5,6 +5,7 @@ module EVM.VMTest
   ( Case
 #if MIN_VERSION_aeson(1, 0, 0)
   , parseSuite
+  , parseBCSuite
 #endif
   , vmForCase
   , checkExpectation

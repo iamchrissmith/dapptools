@@ -44,6 +44,7 @@ import Control.Monad.State.Strict (execState)
 import Data.ByteString            (ByteString)
 import Data.List                  (intercalate, isSuffixOf)
 import Data.Text                  (Text, unpack, pack)
+import Data.Map                   (Map)
 import Data.Maybe                 (fromMaybe)
 import System.Directory           (withCurrentDirectory, listDirectory)
 import System.Exit                (die, exitFailure)
@@ -340,12 +341,12 @@ launchVMTest :: Command -> IO ()
 launchVMTest cmd = do
 #if MIN_VERSION_aeson(1, 0, 0)
   parsed <- VMTest.parseSuite <$> LazyByteString.readFile (file cmd)
-  launchTest parsed cdm
+  launchTest parsed cmd
 #else
   putStrLn "Not supported"
 #endif
 
-launchTest :: Either String (Map String Case) -> Command ->  IO ()
+launchTest :: Either String (Map String VMTest.Case) -> Command ->  IO ()
 launchTest parsed cmd = case parsed of
      Left err -> print err
      Right allTests ->
