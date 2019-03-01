@@ -54,6 +54,7 @@ library
     EVM.Solidity,
     EVM.Stepper,
     EVM.StorageLayout,
+    EVM.Transaction,
     EVM.TTY,
     EVM.TTYCenteredList,
     EVM.Types,
