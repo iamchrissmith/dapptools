@@ -24,6 +24,7 @@ import qualified Control.Monad.State.Class as State
 
 import EVM (EVM)
 import EVM.Stepper (Stepper)
+import EVM.Transaction
 import EVM.Types
 
 import Control.Lens
@@ -33,6 +34,7 @@ import IPPrint.Colored (cpprint)
 import Data.ByteString (ByteString)
 import Data.Aeson ((.:), (.:?))
 import Data.Aeson (FromJSON (..))
+import Data.Either (isLeft)
 import Data.Map (Map)
 import Data.List (intercalate)
 
@@ -41,10 +43,28 @@ import qualified Data.Aeson        as JSON
 import qualified Data.Aeson.Types  as JSON
 import qualified Data.ByteString.Lazy  as Lazy
 
+data Which = Pre | Post
+
+data Block = Block
+  { blockCoinbase   :: Addr
+  , blockDifficulty :: W256
+  , blockGasLimit   :: W256
+  , blockNumber     :: W256
+  , blockTimestamp  :: W256
+  } deriving Show
+
 data Case = Case
   { testVmOpts      :: EVM.VMOpts
   , testContracts   :: Map Addr Contract
   , testExpectation :: Maybe Expectation
+  } deriving Show
+
+data BlockchainCase = BlockchainCase
+  { blockchainBlocks  :: [Block]
+  , blockchainTxs     :: [Transaction]
+  , blockchainPre     :: Map Addr Contract
+  , blockchainPost    :: Map Addr Contract
+  , blockchainNetwork :: String
   } deriving Show
 
 data Contract = Contract
@@ -55,9 +75,9 @@ data Contract = Contract
   } deriving Show
 
 data Expectation = Expectation
-  { expectedOut :: ByteString
+  { expectedOut       :: Maybe ByteString
   , expectedContracts :: Map Addr Contract
-  , expectedGas :: W256
+  , expectedGas       :: Maybe W256
   } deriving Show
 
 checkExpectation :: Case -> EVM.VM -> IO Bool
@@ -83,9 +103,11 @@ checkExpectation x vm =
       cpprint (view EVM.result vm)
       error "internal error"
 
-checkExpectedOut :: ByteString -> ByteString -> Bool
-checkExpectedOut output expected =
-  output == expected
+checkExpectedOut :: ByteString -> Maybe ByteString -> Bool
+checkExpectedOut output ex = case ex of
+  Nothing       -> True
+  Just expected -> output == expected
+
 
 checkExpectedContracts :: EVM.VM -> Map Addr Contract -> Bool
 checkExpectedContracts vm expected =
@@ -95,9 +117,10 @@ clearZeroStorage :: EVM.Contract -> EVM.Contract
 clearZeroStorage =
   over EVM.storage (Map.filterWithKey (\_ x -> x /= 0))
 
-checkExpectedGas :: EVM.VM -> W256 -> Bool
-checkExpectedGas vm expected =
-  case vm ^. EVM.state . EVM.gas of
+checkExpectedGas :: EVM.VM -> Maybe W256 -> Bool
+checkExpectedGas vm ex = case ex of
+  Nothing -> True
+  Just expected -> case vm ^. EVM.state . EVM.gas of
     EVM.C _ x | x == expected -> True
     _ -> False
 
@@ -115,10 +138,31 @@ instance FromJSON Contract where
 instance FromJSON Case where
   parseJSON (JSON.Object v) = Case
     <$> parseVmOpts v
-    <*> parseContracts v
+    <*> parseContracts Pre v
     <*> parseExpectation v
   parseJSON invalid =
-      JSON.typeMismatch "VM test case" invalid
+    JSON.typeMismatch "VM test case" invalid
+
+instance FromJSON BlockchainCase where
+  parseJSON (JSON.Object v) = BlockchainCase
+    <$> v .: "blocks"
+    <*> v .: "transactions"
+    <*> parseContracts Pre v
+    <*> parseContracts Post v
+    <*> v .: "network"
+  parseJSON invalid =
+    JSON.typeMismatch "GeneralState test case" invalid
+
+instance FromJSON Block where
+  parseJSON (JSON.Object v) = do
+    coinbase   <- addrField v "coinbase"
+    difficulty <- wordField v "difficulty"
+    gasLimit   <- wordField v "gasLimit"
+    number     <- wordField v "number"
+    timestamp  <- wordField v "timestamp"
+    return $ Block coinbase difficulty gasLimit number timestamp
+  parseJSON invalid =
+    JSON.typeMismatch "Block" invalid
 
 parseVmOpts :: JSON.Object -> JSON.Parser EVM.VMOpts
 parseVmOpts v =
@@ -145,9 +189,12 @@ parseVmOpts v =
          JSON.typeMismatch "VM test case" (JSON.Object v)
 
 parseContracts ::
-  JSON.Object -> JSON.Parser (Map Addr Contract)
-parseContracts v =
-  v .: "pre" >>= parseJSON
+  Which -> JSON.Object -> JSON.Parser (Map Addr Contract)
+parseContracts w v =
+  v .: which >>= parseJSON
+  where which = case w of
+          Pre  -> "pre"
+          Post -> "postState"
 
 parseExpectation :: JSON.Object -> JSON.Parser (Maybe Expectation)
 parseExpectation v =
@@ -156,7 +203,7 @@ parseExpectation v =
      gas       <- v .:? "gas"
      case (out, contracts, gas) of
        (Just x, Just y, Just z) ->
-         return (Just (Expectation x y z))
+         return (Just (Expectation (Just x) y (Just z)))
        _ ->
          return Nothing
 
@@ -164,6 +211,20 @@ parseSuite ::
   Lazy.ByteString -> Either String (Map String Case)
 parseSuite = JSON.eitherDecode'
 
+parseBCSuite ::
+  Lazy.ByteString -> Either String (Map String Case)
+parseBCSuite x = case (JSON.eitherDecode' x) :: Either String (Map String BlockchainCase) of
+  Left error -> Left error
+  Right bcCases -> let allCases = (fromBlockchainCase <$> bcCases)
+                       rightNetwork (Left OldNetwork) = False
+                       rightNetwork _                 = True
+                       rightNetworkCases = Map.filter rightNetwork allCases
+                       rightToMaybe (Left a)  = Nothing
+                       rightToMaybe (Right b) = Just b
+    in case sequence (rightToMaybe <$> rightNetworkCases) of
+    Just cases -> Right cases
+    Nothing    -> case (Map.elems (Map.filter isLeft rightNetworkCases) !! 0) of
+      Left e -> Left (show e)
 #endif
 
 realizeContracts :: Map Addr Contract -> Map Addr EVM.Contract
@@ -181,6 +242,43 @@ realizeContract x =
         map (\(k, v) -> (EVM.w256 k, EVM.w256 v)) .
         Map.toList $ contractStorage x
         )
+
+data BlockchainError = TooManyBlocks | TooManyTxs | CreationUnsupported | TargetMissing | SignatureUnverified | OldNetwork deriving Show
+
+fromBlockchainCase :: BlockchainCase -> Either BlockchainError Case
+fromBlockchainCase (BlockchainCase blocks txs pre post network) =
+  case (blocks, txs, network) of
+    ((block : []), (tx : []), "ConstantinopleFix") -> fromGoodBlockchainCase block tx pre post
+    ((_ : []), (_ : []), _) -> Left OldNetwork
+    (_, (_ : []), _)        -> Left TooManyBlocks
+    (_, _, _)               -> Left TooManyTxs
+
+fromGoodBlockchainCase :: Block -> Transaction
+                       -> Map Addr Contract -> Map Addr Contract
+                       -> Either BlockchainError Case
+fromGoodBlockchainCase block tx pre post =
+  let to = txToAddr tx
+      from = sender 1 tx
+      feeSchedule = EVM.FeeSchedule.metropolis in
+    case (to, Map.lookup to pre, from) of
+      (0, _, _)       -> Left CreationUnsupported
+      (_, Nothing, _) -> Left TargetMissing
+      (_, _, Nothing) -> Left SignatureUnverified
+      (_, Just c, Just origin) -> Right $ Case (EVM.VMOpts
+          (contractCode c)
+          (txData tx)
+          (txValue tx)
+          to
+          origin
+          origin
+          (txGasLimit tx - (fromIntegral $ EVM.Transaction.txGasCost feeSchedule tx))
+          (blockNumber block)
+          (blockTimestamp block)
+          (blockCoinbase block)
+          (blockDifficulty block)
+          (blockGasLimit block)
+          (txGasPrice tx)
+          feeSchedule) pre (Just $ Expectation Nothing post Nothing)
 
 vmForCase :: Case -> EVM.VM
 vmForCase x =

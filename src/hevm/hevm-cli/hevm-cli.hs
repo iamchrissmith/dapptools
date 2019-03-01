@@ -108,6 +108,11 @@ data Command
   | VmTestReport
       { tests :: String
       }
+  | BcTest
+      { file  :: String
+      , test  :: [String]
+      , debug :: Bool
+      }
   | Flatten
     { sourceFile :: String
     , jsonFile   :: Maybe String
@@ -158,6 +163,8 @@ main = do
       launchExec cmd
     VmTest {} ->
       launchVMTest cmd
+    BcTest {} ->
+      launchBCTest cmd
     DappTest {} ->
       withCurrentDirectory root $ do
         testFile <- findJsonFile (jsonFile cmd)
@@ -320,11 +327,26 @@ vmFromCommand cmd =
     word f def = maybe def id (f cmd)
     addr f def = maybe def id (f cmd)
 
-launchVMTest :: Command -> IO ()
-launchVMTest cmd =
+launchBCTest :: Command -> IO ()
+launchBCTest cmd = do
 #if MIN_VERSION_aeson(1, 0, 0)
-  VMTest.parseSuite <$> LazyByteString.readFile (file cmd) >>=
-   \case
+  parsed <- VMTest.parseBCSuite <$> LazyByteString.readFile (file cmd)
+  launchTest parsed cmd
+#else
+  putStrLn "Not supported"
+#endif
+
+launchVMTest :: Command -> IO ()
+launchVMTest cmd = do
+#if MIN_VERSION_aeson(1, 0, 0)
+  parsed <- VMTest.parseSuite <$> LazyByteString.readFile (file cmd)
+  launchTest parsed cdm
+#else
+  putStrLn "Not supported"
+#endif
+
+launchTest :: Either String (Map String Case) -> Command ->  IO ()
+launchTest parsed cmd = case parsed of
      Left err -> print err
      Right allTests ->
        let testFilter =
@@ -334,9 +356,6 @@ launchVMTest cmd =
        in
          mapM_ (runVMTest (optsMode cmd)) $
            testFilter (Map.toList allTests)
-#else
-  putStrLn "Not supported"
-#endif
 
 #if MIN_VERSION_aeson(1, 0, 0)
 runVMTest :: Mode -> (String, VMTest.Case) -> IO Bool
