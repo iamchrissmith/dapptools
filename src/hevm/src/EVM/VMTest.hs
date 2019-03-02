@@ -215,12 +215,12 @@ parseSuite = JSON.eitherDecode'
 parseBCSuite ::
   Lazy.ByteString -> Either String (Map String Case)
 parseBCSuite x = case (JSON.eitherDecode' x) :: Either String (Map String BlockchainCase) of
-  Left error -> Left error
+  Left e        -> Left e
   Right bcCases -> let allCases = (fromBlockchainCase <$> bcCases)
                        rightNetwork (Left OldNetwork) = False
                        rightNetwork _                 = True
                        rightNetworkCases = Map.filter rightNetwork allCases
-                       rightToMaybe (Left a)  = Nothing
+                       rightToMaybe (Left _)  = Nothing
                        rightToMaybe (Right b) = Just b
     in case sequence (rightToMaybe <$> rightNetworkCases) of
     Just cases -> Right cases
@@ -247,10 +247,10 @@ realizeContract x =
 data BlockchainError = TooManyBlocks | TooManyTxs | CreationUnsupported | TargetMissing | SignatureUnverified | OldNetwork deriving Show
 
 fromBlockchainCase :: BlockchainCase -> Either BlockchainError Case
-fromBlockchainCase (BlockchainCase blocks pre post network) =
+fromBlockchainCase (BlockchainCase blocks preState postState network) =
   case (blocks, network) of
     ((block : []), "ConstantinopleFix") -> case blockTxs block of
-      (tx : []) -> fromGoodBlockchainCase block tx pre post
+      (tx : []) -> fromGoodBlockchainCase block tx preState postState
       _         -> Left TooManyTxs
     ((_ : []), _) -> Left OldNetwork
     (_, _)        -> Left TooManyBlocks
@@ -258,29 +258,29 @@ fromBlockchainCase (BlockchainCase blocks pre post network) =
 fromGoodBlockchainCase :: Block -> Transaction
                        -> Map Addr Contract -> Map Addr Contract
                        -> Either BlockchainError Case
-fromGoodBlockchainCase block tx pre post =
-  let to = txToAddr tx
-      from = sender 1 tx
+fromGoodBlockchainCase block tx preState postState =
+  let toAddr   = txToAddr tx
+      origin   = sender 1 tx
       feeSchedule = EVM.FeeSchedule.metropolis in
-    case (to, Map.lookup to pre, from) of
+    case (toAddr, Map.lookup toAddr preState, origin) of
       (0, _, _)       -> Left CreationUnsupported
       (_, Nothing, _) -> Left TargetMissing
       (_, _, Nothing) -> Left SignatureUnverified
-      (_, Just c, Just origin) -> Right $ Case (EVM.VMOpts
+      (_, Just c, Just fromAddr) -> Right $ Case (EVM.VMOpts
           (contractCode c)
           (txData tx)
           (txValue tx)
-          to
-          origin
-          origin
-          (txGasLimit tx - (fromIntegral $ EVM.Transaction.txGasCost feeSchedule tx))
+          toAddr
+          fromAddr
+          fromAddr
+          (txGasLimit tx - fromIntegral (EVM.Transaction.txGasCost feeSchedule tx))
           (blockNumber block)
           (blockTimestamp block)
           (blockCoinbase block)
           (blockDifficulty block)
           (blockGasLimit block)
           (txGasPrice tx)
-          feeSchedule) pre (Just $ Expectation Nothing post Nothing)
+          feeSchedule) preState (Just $ Expectation Nothing postState Nothing)
 
 vmForCase :: Case -> EVM.VM
 vmForCase x =
