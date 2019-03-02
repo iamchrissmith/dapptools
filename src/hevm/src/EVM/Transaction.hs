@@ -1,6 +1,8 @@
-{-# Language TemplateHaskell #-}
 module EVM.Transaction where
 
+import Prelude hiding (Word)
+
+import EVM.Concrete
 import EVM.FeeSchedule
 import EVM.Keccak (keccak, word256Bytes, rlpWord160, rlpWord256, rlpBytes, rlpList)
 import EVM.Precompiled (execute)
@@ -24,7 +26,6 @@ data Transaction = Transaction
     txV        :: W256,
     txValue    :: W256
   } deriving Show
-
 
 ecrec :: W256 -> W256 -> W256 -> W256 -> Maybe Addr
 ecrec e v r s = (num . word) <$> EVM.Precompiled.execute 1 input 32
@@ -59,9 +60,15 @@ signingData chainId tx =
                               rlpWord256 0x0,
                               rlpWord256 0x0]
 
-txGasCost :: Num n => FeeSchedule n -> Transaction -> n
--- TODO correct
-txGasCost _ _ = 21000
+txGasCost :: FeeSchedule Word -> Transaction -> Word
+txGasCost fs tx =
+  let calldata     = txData tx
+      zeroBytes    = BS.count 0 calldata
+      nonZeroBytes = BS.length calldata - zeroBytes
+      baseCost     = g_transaction fs
+      zeroCost     = g_txdatazero fs
+      nonZeroCost  = g_txdatanonzero fs
+  in baseCost + zeroCost * (fromIntegral zeroBytes) + nonZeroCost * (fromIntegral nonZeroBytes)
 
 instance FromJSON Transaction where
   parseJSON (JSON.Object val) = do
