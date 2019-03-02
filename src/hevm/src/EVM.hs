@@ -193,7 +193,8 @@ data FrameState = FrameState
 
 -- | The state that spans a whole transaction
 data TxState = TxState
-  { _selfdestructs :: [Addr]
+  { _gasprice      :: Word
+  , _selfdestructs :: [Addr]
   , _refunds       :: [(Addr, Word)]
   }
 
@@ -236,7 +237,6 @@ data Block = Block
   , _number     :: Word
   , _difficulty :: Word
   , _gaslimit   :: Word
-  , _gasprice   :: Word
   , _schedule   :: FeeSchedule Word
   }
 
@@ -294,7 +294,8 @@ makeVm o = VM
   { _result = Nothing
   , _frames = mempty
   , _tx = TxState
-    { _selfdestructs = mempty
+    { _gasprice = w256 $ vmoptGasprice o
+    , _selfdestructs = mempty
     , _refunds = mempty
     }
   , _logs = mempty
@@ -305,7 +306,6 @@ makeVm o = VM
     , _number = w256 $ vmoptNumber o
     , _difficulty = w256 $ vmoptDifficulty o
     , _gaslimit = w256 $ vmoptGaslimit o
-    , _gasprice = w256 $ vmoptGasprice o
     , _schedule = vmoptSchedule o
     }
   , _state = FrameState
@@ -592,7 +592,7 @@ exec1 = do
         -- op: GASPRICE
         0x3a ->
           limitStack 1 . burn g_base $
-            next >> push (the block gasprice)
+            next >> push (the tx gasprice)
 
         -- op: EXTCODESIZE
         0x3b ->
