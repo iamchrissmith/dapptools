@@ -44,7 +44,6 @@ import Control.Monad.State.Strict (execState)
 import Data.ByteString            (ByteString)
 import Data.List                  (intercalate, isSuffixOf)
 import Data.Text                  (Text, unpack, pack)
-import Data.Map                   (Map)
 import Data.Maybe                 (fromMaybe)
 import System.Directory           (withCurrentDirectory, listDirectory)
 import System.Exit                (die, exitFailure)
@@ -122,6 +121,8 @@ data Command
   | Emacs
   deriving (Show, Options.Generic, Eq)
 
+data TestFlavour = VMFlavour | BlockchainFlavour
+
 type URL = Text
 
 instance Options.ParseRecord Command where
@@ -163,9 +164,9 @@ main = do
     Exec {} ->
       launchExec cmd
     VmTest {} ->
-      launchVMTest cmd
+      launchTest VMFlavour cmd
     BcTest {} ->
-      launchBCTest cmd
+      launchTest BlockchainFlavour cmd
     DappTest {} ->
       withCurrentDirectory root $ do
         testFile <- findJsonFile (jsonFile cmd)
@@ -329,26 +330,14 @@ vmFromCommand cmd =
     word f def = maybe def id (f cmd)
     addr f def = maybe def id (f cmd)
 
-launchBCTest :: Command -> IO ()
-launchBCTest cmd = do
+launchTest :: TestFlavour -> Command ->  IO ()
+launchTest flavour cmd = do
 #if MIN_VERSION_aeson(1, 0, 0)
-  parsed <- VMTest.parseBCSuite <$> LazyByteString.readFile (file cmd)
-  launchTest parsed cmd
-#else
-  putStrLn "Not supported"
-#endif
-
-launchVMTest :: Command -> IO ()
-launchVMTest cmd = do
-#if MIN_VERSION_aeson(1, 0, 0)
-  parsed <- VMTest.parseSuite <$> LazyByteString.readFile (file cmd)
-  launchTest parsed cmd
-#else
-  putStrLn "Not supported"
-#endif
-
-launchTest :: Either String (Map String VMTest.Case) -> Command ->  IO ()
-launchTest parsed cmd = case parsed of
+  let parser = case flavour of
+        VMFlavour -> VMTest.parseSuite
+        BlockchainFlavour -> VMTest.parseBCSuite
+  parsed <- parser <$> LazyByteString.readFile (file cmd)
+  case parsed of
      Left err -> print err
      Right allTests ->
        let testFilter =
@@ -356,16 +345,21 @@ launchTest parsed cmd = case parsed of
              then id
              else filter (\(x, _) -> elem x (test cmd))
        in
-         mapM_ (runVMTest (optsMode cmd)) $
+         mapM_ (runVMTest flavour (optsMode cmd)) $
            testFilter (Map.toList allTests)
+#else
+  putStrLn "Not supported"
+#endif
 
 #if MIN_VERSION_aeson(1, 0, 0)
-runVMTest :: Mode -> (String, VMTest.Case) -> IO Bool
-runVMTest mode (name, x) = do
+runVMTest :: TestFlavour -> Mode -> (String, VMTest.Case) -> IO Bool
+runVMTest flavour mode (name, x) = do
   let
     vm0 = VMTest.vmForCase x
-    m = void EVM.Stepper.execFully >> EVM.Stepper.evm EVM.finalize
-
+    m = case flavour of
+      -- whether or not to "finalize the tx"
+      VMFlavour -> void EVM.Stepper.execFully >> EVM.Stepper.evm (EVM.finalize False)
+      BlockchainFlavour -> void EVM.Stepper.execFully >> EVM.Stepper.evm (EVM.finalize True)
   putStr (name ++ " ")
   hFlush stdout
   result <- do

@@ -1140,26 +1140,30 @@ resetState = do
   assign frames     []
   assign state      blankState
 
-finalize :: EVM ()
-finalize = do
+finalize :: Bool -> EVM ()
+finalize txmode = do
   destroyedAddresses <- use (tx . selfdestructs)
   modifying (env . contracts)
     (Map.filterWithKey (\k _ -> not (elem k destroyedAddresses)))
-  -- TODO: selfdestruct gas refunds
-  sumRefunds <- (sum . (snd <$>)) <$> (use (tx . refunds))
-  txOrigin <- use (tx . origin)
-  miner    <- use (block . coinbase)
-  blockReward  <- r_block <$> (use (block . schedule))
-  gasRemaining <- use (state . gas)
-  gasPrice     <- use (tx . gasprice)
-  gasLimit     <- use (tx . txgaslimit)
-  let gasUsed      = gasLimit - gasRemaining
-      cappedRefund = min (quot gasUsed 2) sumRefunds
-      minerIncome  = blockReward + gasPrice * (gasUsed - cappedRefund)
-  modifying (env . contracts)
-    (Map.adjust (over balance (+ minerIncome)) miner)
-  modifying (env . contracts)
-    (Map.adjust (over balance (+ (gasRemaining + cappedRefund * gasPrice))) txOrigin)
+  -- whether or not we "finalise the tx"
+  case txmode of
+    False -> return ()
+    True  -> do
+      -- TODO: selfdestruct gas refunds
+      sumRefunds <- (sum . (snd <$>)) <$> (use (tx . refunds))
+      txOrigin <- use (tx . origin)
+      miner    <- use (block . coinbase)
+      blockReward  <- r_block <$> (use (block . schedule))
+      gasRemaining <- use (state . gas)
+      gasPrice     <- use (tx . gasprice)
+      gasLimit     <- use (tx . txgaslimit)
+      let gasUsed      = gasLimit - gasRemaining
+          cappedRefund = min (quot gasUsed 2) sumRefunds
+          minerIncome  = blockReward + gasPrice * (gasUsed - cappedRefund)
+      modifying (env . contracts)
+        (Map.adjust (over balance (+ minerIncome)) miner)
+      modifying (env . contracts)
+        (Map.adjust (over balance (+ (gasRemaining + cappedRefund * gasPrice))) txOrigin)
 
 loadContract :: Addr -> EVM ()
 loadContract target =

@@ -92,7 +92,7 @@ checkExpectation x vm =
         (s2, b2) = ("bad-output", checkExpectedOut output (expectedOut expectation))
         (s3, b3) = ("bad-gas", checkExpectedGas vm (expectedGas expectation))
         ss = map fst (filter (not . snd) [(s1, b1), (s2, b2), (s3, b3)])
-      if not (b1 && b2 && b3) then do
+      if not b1 then do
         putStr (intercalate " " ss)
         putStrLn ""
         putStrLn "Expected postState: "
