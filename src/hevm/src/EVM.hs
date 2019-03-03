@@ -143,11 +143,12 @@ data VMOpts = VMOpts
   , vmoptCaller :: Addr
   , vmoptOrigin :: Addr
   , vmoptGas :: W256
+  , vmoptGaslimit :: W256
   , vmoptNumber :: W256
   , vmoptTimestamp :: W256
   , vmoptCoinbase :: Addr
   , vmoptDifficulty :: W256
-  , vmoptGaslimit :: W256
+  , vmoptBlockGaslimit :: W256
   , vmoptGasprice :: W256
   , vmoptSchedule :: FeeSchedule Word
   } deriving Show
@@ -194,6 +195,8 @@ data FrameState = FrameState
 -- | The state that spans a whole transaction
 data TxState = TxState
   { _gasprice      :: Word
+  , _txgaslimit    :: Word
+  , _origin        :: Addr
   , _selfdestructs :: [Addr]
   , _refunds       :: [(Addr, Word)]
   }
@@ -226,7 +229,6 @@ deriving instance Eq Contract
 data Env = Env
   { _contracts :: Map Addr Contract
   , _sha3Crack :: Map Word ByteString
-  , _origin    :: Addr
   }
 
 
@@ -295,6 +297,8 @@ makeVm o = VM
   , _frames = mempty
   , _tx = TxState
     { _gasprice = w256 $ vmoptGasprice o
+    , _txgaslimit = w256 $ vmoptGaslimit o
+    , _origin = vmoptOrigin o
     , _selfdestructs = mempty
     , _refunds = mempty
     }
@@ -305,7 +309,7 @@ makeVm o = VM
     , _timestamp = w256 $ vmoptTimestamp o
     , _number = w256 $ vmoptNumber o
     , _difficulty = w256 $ vmoptDifficulty o
-    , _gaslimit = w256 $ vmoptGaslimit o
+    , _gaslimit = w256 $ vmoptBlockGaslimit o
     , _schedule = vmoptSchedule o
     }
   , _state = FrameState
@@ -325,7 +329,6 @@ makeVm o = VM
     }
   , _env = Env
     { _sha3Crack = mempty
-    , _origin = vmoptOrigin o
     , _contracts = Map.fromList
       [(vmoptAddress o, initialContract (InitCode (vmoptCode o)))]
     }
@@ -540,7 +543,7 @@ exec1 = do
         -- op: ORIGIN
         0x32 ->
           limitStack 1 . burn g_base $
-            next >> push (num (the env origin))
+            next >> push (num (the tx origin))
 
         -- op: CALLER
         0x33 ->
@@ -1142,6 +1145,21 @@ finalize = do
   destroyedAddresses <- use (tx . selfdestructs)
   modifying (env . contracts)
     (Map.filterWithKey (\k _ -> not (elem k destroyedAddresses)))
+  -- TODO: selfdestruct gas refunds
+  sumRefunds <- (sum . (snd <$>)) <$> (use (tx . refunds))
+  txOrigin <- use (tx . origin)
+  miner    <- use (block . coinbase)
+  blockReward  <- r_block <$> (use (block . schedule))
+  gasRemaining <- use (state . gas)
+  gasPrice     <- use (tx . gasprice)
+  gasLimit     <- use (tx . txgaslimit)
+  let gasUsed      = gasLimit - gasRemaining
+      cappedRefund = min (quot gasUsed 2) sumRefunds
+      minerIncome  = blockReward + gasPrice * (gasUsed - cappedRefund)
+  modifying (env . contracts)
+    (Map.adjust (over balance (+ minerIncome)) miner)
+  modifying (env . contracts)
+    (Map.adjust (over balance (+ (gasRemaining + cappedRefund * gasPrice))) txOrigin)
 
 loadContract :: Addr -> EVM ()
 loadContract target =

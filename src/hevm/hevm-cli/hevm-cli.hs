@@ -309,21 +309,22 @@ vmFromCommand cmd =
     value'   = word value 0
     address' = addr address 1
     vm1 = EVM.makeVm $ EVM.VMOpts
-      { EVM.vmoptCode       = hexByteString "--code" (code cmd)
-      , EVM.vmoptCalldata   = maybe "" (hexByteString "--calldata")
-                                (calldata cmd)
-      , EVM.vmoptValue      = value'
-      , EVM.vmoptAddress    = address'
-      , EVM.vmoptCaller     = addr caller 2
-      , EVM.vmoptOrigin     = addr origin 3
-      , EVM.vmoptGas        = word gas 0
-      , EVM.vmoptCoinbase   = addr coinbase 0
-      , EVM.vmoptNumber     = word number 0
-      , EVM.vmoptTimestamp  = word timestamp 0
-      , EVM.vmoptGaslimit   = word gaslimit 0
-      , EVM.vmoptGasprice   = word gasprice 0
-      , EVM.vmoptDifficulty = word difficulty 0
-      , EVM.vmoptSchedule   = FeeSchedule.metropolis
+      { EVM.vmoptCode          = hexByteString "--code" (code cmd)
+      , EVM.vmoptCalldata      = maybe "" (hexByteString "--calldata")
+                                   (calldata cmd)
+      , EVM.vmoptValue         = value'
+      , EVM.vmoptAddress       = address'
+      , EVM.vmoptCaller        = addr caller 2
+      , EVM.vmoptOrigin        = addr origin 3
+      , EVM.vmoptGas           = word gas 0
+      , EVM.vmoptGaslimit      = word gas 0
+      , EVM.vmoptCoinbase      = addr coinbase 0
+      , EVM.vmoptNumber        = word number 0
+      , EVM.vmoptTimestamp     = word timestamp 0
+      , EVM.vmoptBlockGaslimit = word gaslimit 0
+      , EVM.vmoptGasprice      = word gasprice 0
+      , EVM.vmoptDifficulty    = word difficulty 0
+      , EVM.vmoptSchedule      = FeeSchedule.metropolis
       }
     word f def = maybe def id (f cmd)
     addr f def = maybe def id (f cmd)
