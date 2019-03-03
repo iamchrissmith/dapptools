@@ -23,6 +23,7 @@ import qualified EVM.Emacs as EVM.Emacs
 import qualified EVM.VMTest as VMTest
 #endif
 
+import EVM (ExecMode(..))
 import EVM.Debug
 import EVM.Exec
 import EVM.Solidity
@@ -121,8 +122,6 @@ data Command
   | Emacs
   deriving (Show, Options.Generic, Eq)
 
-data TestFlavour = VMFlavour | BlockchainFlavour
-
 type URL = Text
 
 instance Options.ParseRecord Command where
@@ -164,9 +163,9 @@ main = do
     Exec {} ->
       launchExec cmd
     VmTest {} ->
-      launchTest VMFlavour cmd
+      launchTest ExecuteAsVMTest cmd
     BcTest {} ->
-      launchTest BlockchainFlavour cmd
+      launchTest ExecuteAsBlockchainTest cmd
     DappTest {} ->
       withCurrentDirectory root $ do
         testFile <- findJsonFile (jsonFile cmd)
@@ -330,12 +329,12 @@ vmFromCommand cmd =
     word f def = maybe def id (f cmd)
     addr f def = maybe def id (f cmd)
 
-launchTest :: TestFlavour -> Command ->  IO ()
-launchTest flavour cmd = do
+launchTest :: ExecMode -> Command ->  IO ()
+launchTest execmode cmd = do
 #if MIN_VERSION_aeson(1, 0, 0)
-  let parser = case flavour of
-        VMFlavour -> VMTest.parseSuite
-        BlockchainFlavour -> VMTest.parseBCSuite
+  let parser = case execmode of
+        ExecuteAsVMTest -> VMTest.parseSuite
+        ExecuteAsBlockchainTest -> VMTest.parseBCSuite
   parsed <- parser <$> LazyByteString.readFile (file cmd)
   case parsed of
      Left err -> print err
@@ -345,21 +344,21 @@ launchTest flavour cmd = do
              then id
              else filter (\(x, _) -> elem x (test cmd))
        in
-         mapM_ (runVMTest flavour (optsMode cmd)) $
+         mapM_ (runVMTest execmode (optsMode cmd)) $
            testFilter (Map.toList allTests)
 #else
   putStrLn "Not supported"
 #endif
 
 #if MIN_VERSION_aeson(1, 0, 0)
-runVMTest :: TestFlavour -> Mode -> (String, VMTest.Case) -> IO Bool
-runVMTest flavour mode (name, x) = do
+runVMTest :: ExecMode -> Mode -> (String, VMTest.Case) -> IO Bool
+runVMTest execmode mode (name, x) = do
   let
-    vm0 = VMTest.vmForCase x
-    m = case flavour of
+    vm0 = VMTest.vmForCase execmode x
+    m = case execmode of
       -- whether or not to "finalize the tx"
-      VMFlavour -> void EVM.Stepper.execFully >> EVM.Stepper.evm (EVM.finalize False)
-      BlockchainFlavour -> void EVM.Stepper.execFully >> EVM.Stepper.evm (EVM.finalize True)
+      ExecuteAsVMTest -> void EVM.Stepper.execFully >> EVM.Stepper.evm (EVM.finalize False)
+      ExecuteAsBlockchainTest -> void EVM.Stepper.execFully >> EVM.Stepper.evm (EVM.finalize True)
   putStr (name ++ " ")
   hFlush stdout
   result <- do

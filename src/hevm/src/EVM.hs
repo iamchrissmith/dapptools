@@ -110,7 +110,7 @@ data TraceData
   | EntryTrace Text
   | ReturnTrace ByteString FrameContext
 
-data ExecMode = ExecuteNormally | ExecuteAsVMTest
+data ExecMode = ExecuteNormally | ExecuteAsBlockchainTest | ExecuteAsVMTest
 
 data Query where
   PleaseFetchContract :: Addr         -> (Contract -> EVM ()) -> Query
@@ -864,7 +864,7 @@ exec1 = do
                         ExecuteAsVMTest -> do
                           assign (state . stack) (1 : xs)
                           next
-                        ExecuteNormally -> do
+                        _ -> do
                           delegateCall fees gas' xTo xInOffset xInSize xOutOffset xOutSize xs $ do
                             zoom state $ do
                               assign callvalue xValue
@@ -932,7 +932,7 @@ exec1 = do
                       ExecuteAsVMTest -> do
                         assign (state . stack) (1 : xs)
                         next
-                      ExecuteNormally -> do
+                      _ -> do
                         delegateCall fees gas' xTo xInOffset xInSize xOutOffset xOutSize xs $ do
                           zoom state $ do
                             assign callvalue 0
@@ -1080,7 +1080,7 @@ create vm self this fees xValue xOffset xSize xs newAddr =
           assign (state . stack) (num newAddr : xs)
           next
 
-        ExecuteNormally -> do
+        _ -> do
           let
             initCode =
               readMemory (num xOffset) (num xSize) vm

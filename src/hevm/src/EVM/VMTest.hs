@@ -324,11 +324,11 @@ touchAccount a cs = let
     , _storage = mempty
     } in Map.insertWith (flip const) a newAccount cs
 
-vmForCase :: Case -> EVM.VM
-vmForCase x =
+vmForCase :: EVM.ExecMode -> Case -> EVM.VM
+vmForCase mode x =
   EVM.makeVm (testVmOpts x)
     & EVM.env . EVM.contracts .~ realizeContracts (testContracts x)
-    & EVM.execMode .~ EVM.ExecuteAsVMTest
+    & EVM.execMode .~ mode
 
 interpret :: Stepper a -> EVM a
 interpret =
