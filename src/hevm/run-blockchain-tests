@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -e
+#set -e
 
 HEVM=${HEVM:-hevm}
 
@@ -10,9 +10,9 @@ fi
 
 {
   cd "$1"
-  for x in VMTests/*/*; do
+  for x in BlockchainTests/GeneralStateTests/*/*; do
     echo >&2 "$x"
-    echo -n "$x " ; "$HEVM" vm-test --file $x
+    echo -n "$x " ; "$HEVM" bc-test --file $x
   done
 } | {
   while read path test outcome; do
@@ -25,7 +25,7 @@ fi
       *)  failed+=$row ;;
     esac
   done
-  
+
   cat <<.
 <!doctype html>
 <title>hevm test results</title>
@@ -61,10 +61,10 @@ $(date +%Y-%m-%d)
   echo "passed, "
   wc -l <<<"$failed"
   echo "failed"
-  
+
   cat <<.
 <p>
-(Test suite: <span class=VMTests</span>VMTests</span> for Homestead)
+(Test suite: <span class=GeneralStateTests</span>GeneralStateTests</span> for Homestead)
 </header>
 <h2>Failed tests</h2>
 <table id=failed>
