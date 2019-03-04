@@ -28,6 +28,7 @@ import EVM.Stepper (Stepper)
 import EVM.Transaction
 import EVM.Types
 
+import Control.Arrow ((***), (&&&))
 import Control.Lens
 
 import IPPrint.Colored (cpprint)
@@ -35,9 +36,9 @@ import IPPrint.Colored (cpprint)
 import Data.ByteString (ByteString)
 import Data.Aeson ((.:), (.:?))
 import Data.Aeson (FromJSON (..))
-import Data.Either (isLeft)
 import Data.Map (Map)
 import Data.List (intercalate)
+import Data.Witherable (Filterable, catMaybes)
 
 import qualified Data.Map          as Map
 import qualified Data.Aeson        as JSON
@@ -82,6 +83,12 @@ data Expectation = Expectation
   } deriving Show
 
 makeLenses ''Contract
+
+splitEithers :: (Filterable f) => f (Either a b) -> (f a, f b)
+splitEithers =
+  (catMaybes *** catMaybes)
+  . (fmap fst &&& fmap snd)
+  . (fmap (preview _Left &&& preview _Right))
 
 checkExpectation :: Case -> EVM.VM -> IO Bool
 checkExpectation x vm =
@@ -230,12 +237,10 @@ parseBCSuite x = case (JSON.eitherDecode' x) :: Either String (Map String Blockc
                        rightNetwork (Left OldNetwork) = False
                        rightNetwork _                 = True
                        rightNetworkCases = Map.filter rightNetwork allCases
-                       rightToMaybe (Left _)  = Nothing
-                       rightToMaybe (Right b) = Just b
-    in case sequence (rightToMaybe <$> rightNetworkCases) of
-    Just cases -> Right cases
-    Nothing    -> case (Map.elems (Map.filter isLeft rightNetworkCases) !! 0) of
-      Left e -> Left (show e)
+                       (erroredCases, parsedCases) = splitEithers rightNetworkCases
+    in if Map.size erroredCases > 0
+    then Left ("Couldn't parse case: " ++ (show $ (Map.elems erroredCases) !! 0))
+    else Right parsedCases
 #endif
 
 realizeContracts :: Map Addr Contract -> Map Addr EVM.Contract
