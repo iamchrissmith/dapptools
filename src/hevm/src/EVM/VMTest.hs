@@ -24,6 +24,7 @@ import qualified Control.Monad.Operational as Operational
 import qualified Control.Monad.State.Class as State
 
 import EVM (EVM)
+import EVM.Keccak (newContractAddress)
 import EVM.Stepper (Stepper)
 import EVM.Transaction
 import EVM.Types
@@ -95,13 +96,13 @@ checkExpectation x vm =
   case (testExpectation x, view EVM.result vm) of
     (Just expectation, Just (EVM.VMSuccess output)) -> do
       let
-        (s1, b1) = ("bad-state", checkExpectedContracts vm (expectedContracts expectation))
+        (s4, (_, b4)) = ("bad-balance", checkExpectedContracts vm (expectedContracts expectation))
+        (s1, (b1, _)) = ("bad-state", checkExpectedContracts vm (expectedContracts expectation))
         (s2, b2) = ("bad-output", checkExpectedOut output (expectedOut expectation))
         (s3, b3) = ("bad-gas", checkExpectedGas vm (expectedGas expectation))
-        ss = map fst (filter (not . snd) [(s1, b1), (s2, b2), (s3, b3)])
+        ss = map fst (filter (not . snd) [(s4, not b4), (s1, b1), (s2, b2), (s3, b3)])
       if not b1 then do
-        putStr (intercalate " " ss)
-        putStrLn ""
+        putStrLn (intercalate " " ss)
         putStrLn "Expected postState: "
         putStrLn $ show (expectedContracts expectation)
         putStrLn "Actual postState: "
@@ -125,13 +126,19 @@ checkExpectedOut output ex = case ex of
   Nothing       -> True
   Just expected -> output == expected
 
-checkExpectedContracts :: EVM.VM -> Map Addr Contract -> Bool
+checkExpectedContracts :: EVM.VM -> Map Addr Contract -> (Bool,Bool)
 checkExpectedContracts vm expected =
-  realizeContracts expected == vm ^. EVM.env . EVM.contracts . to (fmap clearZeroStorage)
+  let cs = vm ^. EVM.env . EVM.contracts . to (fmap clearZeroStorage)
+      expectedCs = realizeContracts expected
+  in (expectedCs == cs,
+      (clearBalance <$> expectedCs) == (clearBalance <$> cs))
 
 clearZeroStorage :: EVM.Contract -> EVM.Contract
 clearZeroStorage =
   over EVM.storage (Map.filterWithKey (\_ x -> x /= 0))
+
+clearBalance :: EVM.Contract -> EVM.Contract
+clearBalance = set EVM.balance 0
 
 checkExpectedGas :: EVM.VM -> Maybe W256 -> Bool
 checkExpectedGas vm ex = case ex of
@@ -259,31 +266,65 @@ realizeContract x =
         Map.toList $ x ^. storage
         )
 
-data BlockchainError = TooManyBlocks | TooManyTxs | CreationUnsupported | TargetMissing | SignatureUnverified | InvalidTx | OldNetwork deriving Show
+data BlockchainError = TooManyBlocks | TooManyTxs | NoTxs | CreationUnsupported | TargetMissing | SignatureUnverified | InvalidTx | OldNetwork deriving Show
 
 fromBlockchainCase :: BlockchainCase -> Either BlockchainError Case
 fromBlockchainCase (BlockchainCase blocks preState postState network) =
   case (blocks, network) of
     ((block : []), "ConstantinopleFix") -> case blockTxs block of
-      (tx : []) -> fromGoodBlockchainCase block tx preState postState
+      (tx : []) -> case txToAddr tx of
+        0 -> fromCreateBlockchainCase block tx preState postState
+        _ -> fromNormalBlockchainCase block tx preState postState
+      []        -> Left NoTxs
       _         -> Left TooManyTxs
     ((_ : []), _) -> Left OldNetwork
     (_, _)        -> Left TooManyBlocks
 
-fromGoodBlockchainCase :: Block -> Transaction
+fromCreateBlockchainCase :: Block -> Transaction
+                         -> Map Addr Contract -> Map Addr Contract
+                         -> Either BlockchainError Case
+fromCreateBlockchainCase block tx preState postState =
+  let feeSchedule = EVM.FeeSchedule.metropolis
+      createdAddr = newContractAddress origin (view nonce fromC)
+  in case (sender 1 tx,
+           initCreateTx tx block preState) of
+       (Nothing, _) -> Left SignatureUnverified
+       (Just origin, Just initState) -> Right $ Case
+         (EVM.VMOpts
+          { vmoptCode          = txData tx
+          , vmoptCalldata      = mempty
+          , vmoptValue         = txValue tx
+          , vmoptAddress       = createdAddr
+          , vmoptCaller        = origin
+          , vmoptOrigin        = origin
+          , vmoptGas           = txGasLimit tx - fromIntegral (txGasCost feeSchedule tx)
+          , vmoptGaslimit      = txGasLimit tx
+          , vmoptNumber        = blockNumber block
+          , vmoptTimestamp     = blockTimestamp block
+          , vmoptCoinbase      = blockCoinbase block
+          , vmoptDifficulty    = blockDifficulty block
+          , vmoptBlockGaslimit = blockGasLimit block
+          , vmoptGasprice      = txGasPrice tx
+          , vmoptSchedule      = feeSchedule
+          })
+        initState
+        (Just $ Expectation Nothing postState Nothing)
+
+
+fromNormalBlockchainCase :: Block -> Transaction
                        -> Map Addr Contract -> Map Addr Contract
                        -> Either BlockchainError Case
-fromGoodBlockchainCase block tx preState postState =
-  let toAddr   = txToAddr tx
+fromNormalBlockchainCase block tx preState postState =
+  let toAddr      = txToAddr tx
       feeSchedule = EVM.FeeSchedule.metropolis
     in case (toAddr
            , Map.lookup toAddr preState
            , sender 1 tx
-           , initTx tx block preState) of
+           , initNormalTx tx block preState) of
+      (_, _, Nothing, _) -> Left SignatureUnverified
+      (_, _, _, Nothing) -> Left InvalidTx         
       (0, _, _, _)       -> Left CreationUnsupported
       (_, Nothing, _, _) -> Left TargetMissing
-      (_, _, Nothing, _) -> Left SignatureUnverified
-      (_, _, _, Nothing) -> Left InvalidTx
       (_, Just c, Just origin, Just initState) -> Right $ Case
         (EVM.VMOpts
          { vmoptCode          = view code c
@@ -305,20 +346,37 @@ fromGoodBlockchainCase block tx preState postState =
         initState
         (Just $ Expectation Nothing postState Nothing)
 
-initTx :: Transaction -> Block -> Map Addr Contract -> Maybe (Map Addr Contract)
-initTx tx block cs = do
+initNormalTx :: Transaction -> Block -> Map Addr Contract -> Maybe (Map Addr Contract)
+initNormalTx tx block cs = do
   origin <- sender 1 tx
   let gasDeposit = fromIntegral (txGasPrice tx) * (txGasLimit tx)
       coinbase   = blockCoinbase block
   -- is there a neater lens?
   return $
-    (Map.adjust ((nonce   %~ (+ 1))
-               . (balance %~ (subtract gasDeposit))
-               . (balance %~ (subtract $ txValue tx))) origin)
-    . (Map.adjust (balance %~ (+ (txValue tx))) (txToAddr tx))
+    (Map.adjust ((over nonce   (+ 1))
+               . (over balance (subtract gasDeposit))
+               . (over balance (subtract $ txValue tx))) origin)
+    . (Map.adjust (over balance (+ (txValue tx))) (txToAddr tx))
     . touchAccount origin
     . touchAccount (txToAddr tx)
     . touchAccount coinbase $ cs
+
+initCreateTx :: Transaction -> Block -> Map Addr Contract -> Maybe (Map Addr Contract)
+initCreateTx tx block cs = do
+  origin <- sender 1 tx
+  let gasDeposit  = fromIntegral (txGasPrice tx) * (txGasLimit tx)
+      coinbase    = blockCoinbase block
+      Just fromC  = Map.lookup origin cs
+      createdAddr = newContractAddress origin (view nonce fromC)
+  -- is there a neater lens?
+  return $
+    (Map.adjust ((over nonce   (+ 1))
+               . (over balance (subtract gasDeposit))
+               . (over balance (subtract $ txValue tx))) origin)
+    . (Map.adjust (over balance (+ (txValue tx))) createdAddr)
+    . touchAccount origin
+    . touchAccount createdAddr
+    . touchAccount coinbase $ cs      
 
 touchAccount :: Addr -> Map Addr Contract -> Map Addr Contract
 touchAccount a cs = let

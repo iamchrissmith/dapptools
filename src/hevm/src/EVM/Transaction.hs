@@ -16,7 +16,7 @@ import qualified Data.Aeson.Types  as JSON
 import qualified Data.ByteString   as BS
 
 data Transaction = Transaction
-  { txData :: ByteString,
+  { txData     :: ByteString,
     txGasLimit :: W256,
     txGasPrice :: W256,
     txNonce    :: W256,
@@ -66,6 +66,7 @@ txGasCost fs tx =
       zeroBytes    = BS.count 0 calldata
       nonZeroBytes = BS.length calldata - zeroBytes
       baseCost     = g_transaction fs
+        + if txToAddr tx == 0 then g_txcreate fs else 0
       zeroCost     = g_txdatazero fs
       nonZeroCost  = g_txdatanonzero fs
   in baseCost + zeroCost * (fromIntegral zeroBytes) + nonZeroCost * (fromIntegral nonZeroBytes)

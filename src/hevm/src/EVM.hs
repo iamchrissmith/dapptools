@@ -901,9 +901,8 @@ exec1 = do
               else let
                 availableGas = the state gas
                 (cost, gas') = costOfCall fees (Just this) 0 availableGas xGas
-                  in burn (cost - gas') $ do
-                  delegateCall fees gas' (num xTo) xInOffset xInSize xOutOffset xOutSize xs
-                    (return ())
+                  in burn (cost - gas') $
+                     delegateCall fees gas' (num xTo) xInOffset xInSize xOutOffset xOutSize xs (return ())
             _ -> underrun
 
         -- op: CREATE2
