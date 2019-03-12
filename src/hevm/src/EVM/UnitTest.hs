@@ -555,6 +555,7 @@ initialUnitTestVm (UnitTestOptions {..}) theContract _ =
            , vmoptGasprice = testGasprice
            , vmoptDifficulty = testDifficulty
            , vmoptSchedule = FeeSchedule.metropolis
+           , vmoptCreate = False
            }
     creator =
       initialContract (RuntimeCode mempty)

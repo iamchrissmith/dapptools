@@ -31,6 +31,7 @@ import EVM.Types
 
 import Control.Arrow ((***), (&&&))
 import Control.Lens
+import Control.Monad
 
 import IPPrint.Colored (cpprint)
 
@@ -38,6 +39,7 @@ import Data.ByteString (ByteString)
 import Data.Aeson ((.:), (.:?))
 import Data.Aeson (FromJSON (..))
 import Data.Map (Map)
+import Data.Maybe (fromMaybe)
 import Data.List (intercalate)
 import Data.Witherable (Filterable, catMaybes)
 
@@ -75,6 +77,7 @@ data Contract = Contract
   , _code    :: ByteString
   , _nonce   :: W256
   , _storage :: Map W256 W256
+  , _create  :: Bool
   } deriving Show
 
 data Expectation = Expectation
@@ -84,6 +87,21 @@ data Expectation = Expectation
   } deriving Show
 
 makeLenses ''Contract
+
+accountAt :: Addr -> Getter (Map Addr Contract) Contract
+accountAt a = (at a) . (to $ fromMaybe newAccount)
+
+touchAccount :: Addr -> Map Addr Contract -> Map Addr Contract
+touchAccount a cs = Map.insertWith (flip const) a newAccount cs
+
+newAccount :: Contract
+newAccount = Contract
+  { _balance = 0
+  , _code    = mempty
+  , _nonce   = 0
+  , _storage = mempty
+  , _create  = False
+  }
 
 splitEithers :: (Filterable f) => f (Either a b) -> (f a, f b)
 splitEithers =
@@ -155,6 +173,7 @@ instance FromJSON Contract where
     <*> (hexText <$> v .: "code")
     <*> v .: "nonce"
     <*> v .: "storage"
+    <*> pure False
   parseJSON invalid =
     JSON.typeMismatch "VM test case contract" invalid
 
@@ -210,6 +229,7 @@ parseVmOpts v =
            <*> wordField env  "currentGasLimit"
            <*> wordField exec "gasPrice"
            <*> pure (EVM.FeeSchedule.homestead)
+           <*> pure False
        _ ->
          JSON.typeMismatch "VM test case" (JSON.Object v)
 
@@ -257,7 +277,10 @@ realizeContracts = Map.fromList . map f . Map.toList
 
 realizeContract :: Contract -> EVM.Contract
 realizeContract x =
-  EVM.initialContract (EVM.RuntimeCode (x ^. code))
+  let codetype = case view create x of
+        False -> EVM.RuntimeCode
+        True  -> EVM.InitCode
+  in EVM.initialContract (codetype (x ^. code))
     & EVM.balance .~ EVM.w256 (x ^. balance)
     & EVM.nonce   .~ EVM.w256 (x ^. nonce)
     & EVM.storage .~ (
@@ -266,7 +289,7 @@ realizeContract x =
         Map.toList $ x ^. storage
         )
 
-data BlockchainError = TooManyBlocks | TooManyTxs | NoTxs | CreationUnsupported | TargetMissing | SignatureUnverified | InvalidTx | OldNetwork deriving Show
+data BlockchainError = TooManyBlocks | TooManyTxs | NoTxs | CreationUnsupported | TargetMissing | SignatureUnverified | InvalidTx | OldNetwork | FailedCreate deriving Show
 
 fromBlockchainCase :: BlockchainCase -> Either BlockchainError Case
 fromBlockchainCase (BlockchainCase blocks preState postState network) =
@@ -284,12 +307,13 @@ fromCreateBlockchainCase :: Block -> Transaction
                          -> Map Addr Contract -> Map Addr Contract
                          -> Either BlockchainError Case
 fromCreateBlockchainCase block tx preState postState =
-  let feeSchedule = EVM.FeeSchedule.metropolis
-      createdAddr = newContractAddress origin (view nonce fromC)
-  in case (sender 1 tx,
-           initCreateTx tx block preState) of
-       (Nothing, _) -> Left SignatureUnverified
-       (Just origin, Just initState) -> Right $ Case
+  case (sender 1 tx,
+        initCreateTx tx block preState) of
+    (Nothing, _) -> Left SignatureUnverified
+    (_, Nothing) -> Left FailedCreate
+    (Just origin, Just (initState, createdAddr)) -> let
+      feeSchedule = EVM.FeeSchedule.metropolis
+      in Right $ Case
          (EVM.VMOpts
           { vmoptCode          = txData tx
           , vmoptCalldata      = mempty
@@ -306,6 +330,7 @@ fromCreateBlockchainCase block tx preState postState =
           , vmoptBlockGaslimit = blockGasLimit block
           , vmoptGasprice      = txGasPrice tx
           , vmoptSchedule      = feeSchedule
+          , vmoptCreate        = True
           })
         initState
         (Just $ Expectation Nothing postState Nothing)
@@ -322,7 +347,7 @@ fromNormalBlockchainCase block tx preState postState =
            , sender 1 tx
            , initNormalTx tx block preState) of
       (_, _, Nothing, _) -> Left SignatureUnverified
-      (_, _, _, Nothing) -> Left InvalidTx         
+      (_, _, _, Nothing) -> Left InvalidTx
       (0, _, _, _)       -> Left CreationUnsupported
       (_, Nothing, _, _) -> Left TargetMissing
       (_, Just c, Just origin, Just initState) -> Right $ Case
@@ -342,6 +367,7 @@ fromNormalBlockchainCase block tx preState postState =
          , vmoptBlockGaslimit = blockGasLimit block
          , vmoptGasprice      = txGasPrice tx
          , vmoptSchedule      = feeSchedule
+         , vmoptCreate        = False
          })
         initState
         (Just $ Expectation Nothing postState Nothing)
@@ -361,31 +387,26 @@ initNormalTx tx block cs = do
     . touchAccount (txToAddr tx)
     . touchAccount coinbase $ cs
 
-initCreateTx :: Transaction -> Block -> Map Addr Contract -> Maybe (Map Addr Contract)
+initCreateTx :: Transaction -> Block -> Map Addr Contract -> Maybe ((Map Addr Contract), Addr)
 initCreateTx tx block cs = do
   origin <- sender 1 tx
   let gasDeposit  = fromIntegral (txGasPrice tx) * (txGasLimit tx)
       coinbase    = blockCoinbase block
-      Just fromC  = Map.lookup origin cs
-      createdAddr = newContractAddress origin (view nonce fromC)
-  -- is there a neater lens?
+      senderNonce = view (accountAt origin . nonce) cs
+      createdAddr = newContractAddress origin senderNonce
+      prevCode    = view (accountAt createdAddr .  code) cs
+      prevNonce   = view (accountAt createdAddr . nonce) cs
+  guard $ (prevCode == mempty) && (prevNonce == 0)
   return $
-    (Map.adjust ((over nonce   (+ 1))
+    ((Map.adjust ((over nonce   (+ 1))
                . (over balance (subtract gasDeposit))
                . (over balance (subtract $ txValue tx))) origin)
-    . (Map.adjust (over balance (+ (txValue tx))) createdAddr)
-    . touchAccount origin
-    . touchAccount createdAddr
-    . touchAccount coinbase $ cs      
-
-touchAccount :: Addr -> Map Addr Contract -> Map Addr Contract
-touchAccount a cs = let
-  newAccount = Contract
-    { _balance = 0
-    , _code    = mempty
-    , _nonce   = 0
-    , _storage = mempty
-    } in Map.insertWith (flip const) a newAccount cs
+   . (Map.adjust ((over balance (+ (txValue tx)))
+               . (set nonce 1)
+               . (set create True)) createdAddr)
+   . touchAccount origin
+   . touchAccount createdAddr
+   . touchAccount coinbase $ cs, createdAddr)
 
 vmForCase :: EVM.ExecMode -> Case -> EVM.VM
 vmForCase mode x =

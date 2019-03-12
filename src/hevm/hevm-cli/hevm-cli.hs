@@ -325,6 +325,7 @@ vmFromCommand cmd =
       , EVM.vmoptGasprice      = word gasprice 0
       , EVM.vmoptDifficulty    = word difficulty 0
       , EVM.vmoptSchedule      = FeeSchedule.metropolis
+      , EVM.vmoptCreate        = False
       }
     word f def = maybe def id (f cmd)
     addr f def = maybe def id (f cmd)

@@ -151,6 +151,7 @@ data VMOpts = VMOpts
   , vmoptBlockGaslimit :: W256
   , vmoptGasprice :: W256
   , vmoptSchedule :: FeeSchedule Word
+  , vmoptCreate :: Bool
   } deriving Show
 
 -- | A log entry
@@ -199,6 +200,7 @@ data TxState = TxState
   , _origin        :: Addr
   , _selfdestructs :: [Addr]
   , _refunds       :: [(Addr, Word)]
+  , _isCreate      :: Bool
   }
 
 -- | A contract is either in creation (running its "constructor") or
@@ -301,6 +303,7 @@ makeVm o = VM
     , _origin = vmoptOrigin o
     , _selfdestructs = mempty
     , _refunds = mempty
+    , _isCreate = vmoptCreate o
     }
   , _logs = mempty
   , _traces = Zipper.fromForest []
@@ -1148,6 +1151,15 @@ finalize txmode = do
   case txmode of
     False -> return ()
     True  -> do
+      use (tx . isCreate) >>= \case
+        False -> return ()
+        True  -> use result >>= \case
+          Nothing                 -> error "Finalising an unfinished tx."
+          Just (VMFailure _)      -> return ()
+          Just (VMSuccess output) -> do
+            createe <- use (state . contract)
+            replaceCode createe (RuntimeCode output)
+
       -- TODO: selfdestruct gas refunds
       sumRefunds <- (sum . (snd <$>)) <$> (use (tx . refunds))
       txOrigin <- use (tx . origin)
