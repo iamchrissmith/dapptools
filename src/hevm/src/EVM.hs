@@ -882,7 +882,45 @@ exec1 = do
 
         -- op: CALLCODE
         0xf2 ->
-          error "CALLCODE not supported (use DELEGATECALL)"
+          case stk of
+            ( xGas
+              : (num -> xTo)
+              : xValue
+              : xInOffset
+              : xInSize
+              : xOutOffset
+              : xOutSize
+              : xs
+             ) ->
+              case xTo of
+                n | n > 0 && n <= 8 -> precompiledContract
+                _ ->
+                  let
+                    availableGas = the state gas
+                    recipient    = view (env . contracts . at xTo) vm
+                    (cost, gas') = costOfCall fees recipient xValue availableGas xGas
+                  in burn (cost - gas') $
+                    (if xValue > 0 then notStatic else id) $
+                    if xValue > view balance this
+                    then do
+                      assign (state . stack) (0 : xs)
+                      next
+                    else
+                      case view execMode vm of
+                        ExecuteAsVMTest -> do
+                          assign (state . stack) (1 : xs)
+                          next
+                        _ -> do
+                          delegateCall fees gas' xTo xInOffset xInSize xOutOffset xOutSize xs $ do
+                            zoom state $ do
+                              assign callvalue xValue
+                              assign caller (the state contract)
+                              assign memorySize 0
+                            zoom (env . contracts) $ do
+                              ix self . balance -= xValue
+                              ix xTo  . balance += xValue
+            _ ->
+              underrun
 
         -- op: RETURN
         0xf3 ->
