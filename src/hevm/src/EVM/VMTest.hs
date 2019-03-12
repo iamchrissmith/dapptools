@@ -267,6 +267,8 @@ parseBCSuite x = case (JSON.eitherDecode' x) :: Either String (Map String Blockc
                        (erroredCases, parsedCases) = splitEithers rightNetworkCases
     in if Map.size erroredCases > 0
     then Left ("Couldn't parse case: " ++ (show $ (Map.elems erroredCases) !! 0))
+    else if Map.size parsedCases == 0
+    then Left "No cases for current network."
     else Right parsedCases
 #endif
 
