@@ -1033,7 +1033,8 @@ precompiledContract = do
         case EVM.Precompiled.execute op input (num outSize) of
           Nothing -> do
             assign (state . stack) (0 : xs)
-            vmError (PrecompiledContractError op)
+            next
+            -- vmError (PrecompiledContractError op)
           Just output -> do
             let
               cost =
