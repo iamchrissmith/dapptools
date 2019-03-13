@@ -198,6 +198,8 @@ data TxState = TxState
   { _gasprice      :: Word
   , _txgaslimit    :: Word
   , _origin        :: Addr
+  , _toAddr        :: Addr
+  , _value         :: Word
   , _selfdestructs :: [Addr]
   , _refunds       :: [(Addr, Word)]
   , _isCreate      :: Bool
@@ -301,6 +303,8 @@ makeVm o = VM
     { _gasprice = w256 $ vmoptGasprice o
     , _txgaslimit = w256 $ vmoptGaslimit o
     , _origin = vmoptOrigin o
+    , _toAddr = vmoptAddress o
+    , _value = w256 $ vmoptValue o
     , _selfdestructs = mempty
     , _refunds = mempty
     , _isCreate = vmoptCreate o
@@ -1202,18 +1206,30 @@ finalize txmode = do
   case txmode of
     False -> return ()
     True  -> do
-      use (tx . isCreate) >>= \case
-        False -> return ()
-        True  -> use result >>= \case
-          Nothing                 -> error "Finalising an unfinished tx."
-          Just (VMFailure _)      -> return ()
-          Just (VMSuccess output) -> do
-            createe <- use (state . contract)
-            replaceCode createe (RuntimeCode output)
-
+      (use (tx . isCreate) >>= \case
+          False -> return ()
+          True  -> use result >>= \case
+            Nothing                 -> error "Finalising an unfinished tx."
+            Just (VMFailure _)      -> return ()
+            Just (VMSuccess output) -> do
+              createe <- use (state . contract)
+              replaceCode createe (RuntimeCode output))
+      res <- use result
+      -- burn remaining gas on error
+      case resultRefunds <$> res of
+        Just False -> use (state . gas) >>= (flip burn (return ()))
+        _          -> return ()
+      txOrigin <- use (tx . origin)
+      txTo     <- use (tx . toAddr)
+      txValue  <- use (tx . value)
+      -- return ether on error
+      case res of
+        Just (VMFailure _) -> zoom (env . contracts) $ do
+          ix txOrigin . balance += txValue
+          ix txTo     . balance -= txValue
+        _ -> return ()
       -- TODO: selfdestruct gas refunds
       sumRefunds <- (sum . (snd <$>)) <$> (use (tx . refunds))
-      txOrigin <- use (tx . origin)
       miner    <- use (block . coinbase)
       blockReward  <- r_block <$> (use (block . schedule))
       gasRemaining <- use (state . gas)
@@ -1221,11 +1237,12 @@ finalize txmode = do
       gasLimit     <- use (tx . txgaslimit)
       let gasUsed      = gasLimit - gasRemaining
           cappedRefund = min (quot gasUsed 2) sumRefunds
-          minerIncome  = blockReward + gasPrice * (gasUsed - cappedRefund)
+          originPay    = (gasRemaining + cappedRefund) * gasPrice
+          minerPay     = blockReward + gasPrice * (gasUsed - cappedRefund)
       modifying (env . contracts)
-        (Map.adjust (over balance (+ minerIncome)) miner)
+        (Map.adjust (over balance (+ minerPay)) miner)
       modifying (env . contracts)
-        (Map.adjust (over balance (+ (gasRemaining + cappedRefund * gasPrice))) txOrigin)
+        (Map.adjust (over balance (+ originPay)) txOrigin)
 
 loadContract :: Addr -> EVM ()
 loadContract target =
@@ -1497,6 +1514,12 @@ finishFrame how = do
 
 vmError :: Error -> EVM ()
 vmError e = finishFrame (FrameErrored e)
+
+resultRefunds :: VMResult -> Bool
+resultRefunds = \case
+  VMSuccess _          -> True
+  VMFailure (Revert _) -> True
+  VMFailure _          -> False
 
 -- * Memory helpers
 
