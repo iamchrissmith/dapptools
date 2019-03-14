@@ -75,7 +75,7 @@ data BlockchainCase = BlockchainCase
 
 data Contract = Contract
   { _balance :: W256
-  , _code    :: ByteString
+  , _code    :: EVM.ContractCode
   , _nonce   :: W256
   , _storage :: Map W256 W256
   , _create  :: Bool
@@ -98,7 +98,7 @@ touchAccount a cs = Map.insertWith (flip const) a newAccount cs
 newAccount :: Contract
 newAccount = Contract
   { _balance = 0
-  , _code    = mempty
+  , _code    = EVM.RuntimeCode mempty
   , _nonce   = 0
   , _storage = mempty
   , _create  = False
@@ -186,7 +186,7 @@ checkExpectedGas vm ex = case ex of
 instance FromJSON Contract where
   parseJSON (JSON.Object v) = Contract
     <$> v .: "balance"
-    <*> (hexText <$> v .: "code")
+    <*> (EVM.RuntimeCode <$> (hexText <$> v .: "code"))
     <*> v .: "nonce"
     <*> v .: "storage"
     <*> pure False
@@ -295,10 +295,7 @@ realizeContracts = Map.fromList . map f . Map.toList
 
 realizeContract :: Contract -> EVM.Contract
 realizeContract x =
-  let codetype = case view create x of
-        False -> EVM.RuntimeCode
-        True  -> EVM.InitCode
-  in EVM.initialContract (codetype (x ^. code))
+  EVM.initialContract (x ^. code)
     & EVM.balance .~ EVM.w256 (x ^. balance)
     & EVM.nonce   .~ EVM.w256 (x ^. nonce)
     & EVM.storage .~ (
@@ -370,7 +367,7 @@ fromNormalBlockchainCase block tx preState postState =
       (_, Nothing, _, _) -> Left TargetMissing
       (_, Just c, Just origin, Just initState) -> Right $ Case
         (EVM.VMOpts
-         { vmoptCode          = view code c
+         { vmoptCode          = theCode
          , vmoptCalldata      = txData tx
          , vmoptValue         = txValue tx
          , vmoptAddress       = toAddr
@@ -389,13 +386,15 @@ fromNormalBlockchainCase block tx preState postState =
          })
         initState
         (Just $ Expectation Nothing postState Nothing)
+        where theCode = case (view code c) of
+                EVM.RuntimeCode x  -> x
+                EVM.InitCode x     -> x
 
 initNormalTx :: Transaction -> Block -> Map Addr Contract -> Maybe (Map Addr Contract)
 initNormalTx tx block cs = do
   origin <- sender 1 tx
   let gasDeposit = fromIntegral (txGasPrice tx) * (txGasLimit tx)
       coinbase   = blockCoinbase block
-  -- is there a neater lens?
   return $
     (Map.adjust ((over nonce   (+ 1))
                . (over balance (subtract gasDeposit))
@@ -414,12 +413,13 @@ initCreateTx tx block cs = do
       createdAddr = newContractAddress origin senderNonce
       prevCode    = view (accountAt createdAddr .  code) cs
       prevNonce   = view (accountAt createdAddr . nonce) cs
-  guard $ (prevCode == mempty) && (prevNonce == 0)
+  guard $ (prevCode == EVM.RuntimeCode mempty) && (prevNonce == 0)
   return $
     ((Map.adjust ((over nonce   (+ 1))
                . (over balance (subtract gasDeposit))
                . (over balance (subtract $ txValue tx))) origin)
    . (Map.adjust ((over balance (+ (txValue tx)))
+               . (set code (EVM.InitCode $ txData tx))
                . (set nonce 1)
                . (set create True)) createdAddr)
    . touchAccount origin
