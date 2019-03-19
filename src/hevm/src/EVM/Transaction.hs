@@ -85,3 +85,8 @@ instance FromJSON Transaction where
     return $ Transaction tdata gasLimit gasPrice nonce r s toAddr v value
   parseJSON invalid =
     JSON.typeMismatch "Transaction" invalid
+
+badtx1 = Transaction {txData = "a\ETX\232`dR`\NUL`\NUL` `\NUL`\NULs\176\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NULb\EOT\147\224\242P`\NUL`\NUL`\NUL`\NULs0\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NULb\EOT\147\224\244P`\NUL`\NUL` `\NULs\176\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NULb\EOT\147\224\244P`\NUL`\NUL`\NUL`\NUL`\NULs\DLE\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NULb\EOT\147\224\242P`\NUL`\NUL`\NUL`\NUL`\NULs \NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL\NULb\t'\192\241", txGasLimit = 0x1e8480, txGasPrice = 0x1, txNonce = 0x0, txR = 0xcee9dea4248d515aeadc1dc546cb6d0fbf71a92576b53138c84aef648fccc619, txS = 0xf95417ec51f5dc156685d227b306baf914f88d17b5ddf5ab9080399186bc68, txToAddr = 000000000000, txV = 0x1b, txValue = 0x1}
+-- sender 1 badtx1 = 0ffc07e42e53c5ad65c281de491d0363a0427456
+-- sender should be a94f5374fce5edbc8e2a8697c15331677e6ebf0b
+-- PROBABLY because of large data
