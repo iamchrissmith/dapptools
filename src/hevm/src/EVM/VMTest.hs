@@ -428,8 +428,10 @@ initCreateTx tx block cs = do
 
 vmForCase :: EVM.ExecMode -> Case -> EVM.VM
 vmForCase mode x =
-  EVM.makeVm (testVmOpts x)
-    & EVM.env . EVM.contracts .~ realizeContracts (testContracts x)
+  let cs = realizeContracts (testContracts x) in
+    EVM.makeVm (testVmOpts x)
+    & EVM.env . EVM.contracts .~ cs
+    & EVM.tx . EVM.txReversion .~ cs
     & EVM.execMode .~ mode
 
 interpret :: Stepper a -> EVM a

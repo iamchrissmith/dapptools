@@ -203,6 +203,7 @@ data TxState = TxState
   , _selfdestructs :: [Addr]
   , _refunds       :: [(Addr, Word)]
   , _isCreate      :: Bool
+  , _txReversion   :: Map Addr Contract
   }
 
 -- | A contract is either in creation (running its "constructor") or
@@ -308,6 +309,8 @@ makeVm o = VM
     , _selfdestructs = mempty
     , _refunds = mempty
     , _isCreate = vmoptCreate o
+    , _txReversion = Map.fromList
+      [(vmoptAddress o, initialContract (InitCode (vmoptCode o)))]
     }
   , _logs = mempty
   , _traces = Zipper.fromForest []
@@ -1210,28 +1213,14 @@ finalize txmode = do
   case txmode of
     False -> return ()
     True  -> do
-      (use (tx . isCreate) >>= \case
-          False -> return ()
-          True  -> use result >>= \case
-            Nothing                 -> error "Finalising an unfinished tx."
-            Just (VMFailure _)      -> return ()
-            Just (VMSuccess output) -> do
-              createe <- use (state . contract)
-              replaceCode createe (RuntimeCode output))
       res <- use result
       -- burn remaining gas on error
       case resultRefunds <$> res of
         Just False -> use (state . gas) >>= (flip burn (return ()))
         _          -> return ()
       txOrigin <- use (tx . origin)
-      txTo     <- use (tx . toAddr)
-      txValue  <- use (tx . value)
-      -- return ether on error
-      case res of
-        Just (VMFailure _) -> zoom (env . contracts) $ do
-          ix txOrigin . balance += txValue
-          ix txTo     . balance -= txValue
-        _ -> return ()
+      -- txTo     <- use (tx . toAddr)
+      -- txValue  <- use (tx . value)
       -- TODO: selfdestruct gas refunds
       sumRefunds <- (sum . (snd <$>)) <$> (use (tx . refunds))
       miner    <- use (block . coinbase)
@@ -1239,10 +1228,27 @@ finalize txmode = do
       gasRemaining <- use (state . gas)
       gasPrice     <- use (tx . gasprice)
       gasLimit     <- use (tx . txgaslimit)
+      reversion    <- use (tx . txReversion)
       let gasUsed      = gasLimit - gasRemaining
           cappedRefund = min (quot gasUsed 2) sumRefunds
           originPay    = (gasRemaining + cappedRefund) * gasPrice
           minerPay     = blockReward + gasPrice * (gasUsed - cappedRefund)
+      -- revert all contracts on error
+      case res of
+        Just (VMFailure _) -> assign (env . contracts) reversion
+        _                  -> return ()
+      -- revert created contract on error
+      use (tx . isCreate) >>= \case
+        False -> return ()
+        True  -> case res of
+          Just (VMFailure _) -> do
+            createe <- use (state . contract)
+            modifying (env . contracts)
+              (Map.delete createe)
+          Just (VMSuccess output) -> do
+            createe <- use (state . contract)
+            replaceCode createe (RuntimeCode output)
+          Nothing -> error "Finalising an unfinished tx."
       modifying (env . contracts)
         (Map.adjust (over balance (+ minerPay)) miner)
       modifying (env . contracts)
